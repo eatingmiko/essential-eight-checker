@@ -6,9 +6,13 @@
 .DESCRIPTION
     Read-only indicator check. This script makes NO changes to system settings.
     It is not a formal Essential Eight maturity assessment.
+    The only files it writes are its own reports in -OutputPath.
 
 .PARAMETER OutputPath
     Folder where CSV and HTML reports are saved. Defaults to .\reports
+
+.PARAMETER NoExport
+    Show the console summary only; do not write CSV/HTML report files.
 
 .EXAMPLE
     .\Invoke-E8Check.ps1
@@ -22,7 +26,9 @@
 
 [CmdletBinding()]
 param(
-    [string]$OutputPath = (Join-Path -Path $PSScriptRoot -ChildPath 'reports')
+    [string]$OutputPath = (Join-Path -Path $PSScriptRoot -ChildPath 'reports'),
+
+    [switch]$NoExport
 )
 
 Set-StrictMode -Version Latest
@@ -455,6 +461,131 @@ function Get-ManualChecks {
 }
 
 # ---------------------------------------------------------------------------
+# Output functions
+# ---------------------------------------------------------------------------
+
+function Write-Summary {
+    <#
+    .SYNOPSIS
+        Writes a colour-coded summary of all results to the console.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Results
+    )
+
+    # Lookup table: status -> console colour
+    $colours = @{
+        'Pass'    = 'Green'
+        'Fail'    = 'Red'
+        'Warning' = 'Yellow'
+        'Manual'  = 'Cyan'
+        'N/A'     = 'DarkGray'
+        'Error'   = 'Magenta'
+    }
+
+    foreach ($result in $Results) {
+        $colour = $colours[$result.Status]
+
+        # [STATUS] padded to a fixed width so the control names line up
+        Write-Host ('[{0,-7}] ' -f $result.Status.ToUpper()) -ForegroundColor $colour -NoNewline
+        Write-Host $result.Control -ForegroundColor White
+        Write-Host "          $($result.Finding)" -ForegroundColor Gray
+
+        if ($result.Remediation) {
+            Write-Host "          Fix: $($result.Remediation)" -ForegroundColor DarkYellow
+        }
+        Write-Host ''
+    }
+
+    # Totals per status, e.g. "Pass: 2 | Warning: 2 | Manual: 3"
+    $totals = ($Results | Group-Object -Property Status |
+        ForEach-Object { "$($_.Name): $($_.Count)" }) -join ' | '
+    Write-Host "Summary: $totals" -ForegroundColor Cyan
+}
+
+function Export-Report {
+    <#
+    .SYNOPSIS
+        Exports results to timestamped CSV and HTML files.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Results,
+
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    # Create the reports folder if it doesn't exist
+    if (-not (Test-Path -Path $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+
+    # Filenames include the hostname and a timestamp, which is exactly
+    # why reports/ and *.csv / *.html are in .gitignore
+    $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $baseName  = "E8Report_$($env:COMPUTERNAME)_$timestamp"
+    $csvPath   = Join-Path -Path $Path -ChildPath "$baseName.csv"
+    $htmlPath  = Join-Path -Path $Path -ChildPath "$baseName.html"
+
+    # --- CSV ---
+    $Results | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+
+    # --- HTML ---
+    $head = @'
+<meta charset="utf-8">
+<title>Essential Eight ML1 Indicator Report</title>
+<style>
+  body    { font-family: Segoe UI, Arial, sans-serif; margin: 2em; color: #222; }
+  h1      { color: #1f3b57; }
+  table   { border-collapse: collapse; width: 100%; }
+  th, td  { border: 1px solid #ccc; padding: 8px; text-align: left; vertical-align: top; }
+  th      { background: #1f3b57; color: #fff; }
+  .pass    { background: #d4edda; }
+  .fail    { background: #f8d7da; }
+  .warning { background: #fff3cd; }
+  .manual  { background: #d1ecf1; }
+  .na      { background: #eeeeee; }
+  .error   { background: #e2d4f0; }
+</style>
+'@
+
+    $elevated = if (Test-IsAdministrator) { 'Yes' } else { 'No' }
+    $runDate  = Get-Date -Format 'yyyy-MM-dd HH:mm'
+
+    $preContent = "<h1>Essential Eight ML1 Indicator Report</h1>" +
+        "<p><strong>Computer:</strong> $env:COMPUTERNAME | " +
+        "<strong>Run by:</strong> $env:USERNAME | " +
+        "<strong>Date:</strong> $runDate | " +
+        "<strong>Elevated:</strong> $elevated</p>" +
+        "<p><em>Indicator check only. This is not a formal Essential Eight maturity " +
+        "assessment. Manual items require separate evidence.</em></p>"
+
+    $htmlParams = @{
+        Property   = 'Control', 'Status', 'Finding', 'Remediation'
+        Head       = $head
+        PreContent = $preContent
+    }
+    $html = $Results | ConvertTo-Html @htmlParams | Out-String
+
+    # Colour each Status cell by adding a CSS class
+    $statusClasses = @{
+        'Pass' = 'pass'; 'Fail' = 'fail'; 'Warning' = 'warning'
+        'Manual' = 'manual'; 'N/A' = 'na'; 'Error' = 'error'
+    }
+    foreach ($status in $statusClasses.Keys) {
+        $html = $html.Replace("<td>$status</td>", "<td class=""$($statusClasses[$status])"">$status</td>")
+    }
+
+    Set-Content -Path $htmlPath -Value $html -Encoding UTF8
+
+    Write-Host ''
+    Write-Host "CSV report:  $csvPath"  -ForegroundColor Green
+    Write-Host "HTML report: $htmlPath" -ForegroundColor Green
+}
+
+# ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
 
@@ -479,4 +610,8 @@ Get-ManualChecks | ForEach-Object { $Results.Add($_) }
 # Output
 # ---------------------------------------------------------------------------
 
-$Results | Format-Table -AutoSize
+Write-Summary -Results $Results
+
+if (-not $NoExport) {
+    Export-Report -Results $Results -Path $OutputPath
+}
