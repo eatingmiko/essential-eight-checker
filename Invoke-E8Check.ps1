@@ -194,6 +194,48 @@ function Test-ApplicationControl {
     }
 }
 
+function Test-OSPatching {
+    <#
+    .SYNOPSIS
+        E8 Control 6: Checks the install date of the most recent Windows update.
+    #>
+    param(
+        [int]$MaxAgeDays = 30
+    )
+
+    $control     = 'Patch operating systems'
+    $remediation = 'Run Windows Update and install all available updates. ' +
+                   'ML1: workstation OS patches within one month of release ' +
+                   '(internet-facing: two weeks, or 48 hours if an exploit exists).'
+
+    try {
+        $latest = Get-HotFix -ErrorAction Stop |
+            Where-Object { $_.InstalledOn } |
+            Sort-Object -Property InstalledOn -Descending |
+            Select-Object -First 1
+
+        if (-not $latest) {
+            return New-CheckResult -Control $control -Status 'Warning' `
+                -Finding 'No updates with an install date were found.' `
+                -Remediation 'Verify patch status manually in Settings > Windows Update > Update history.'
+        }
+
+        $ageDays = [int]((Get-Date) - $latest.InstalledOn).TotalDays
+        $finding = "Most recent update: $($latest.HotFixID), installed " +
+                   "$($latest.InstalledOn.ToString('yyyy-MM-dd')) ($ageDays days ago)"
+
+        if ($ageDays -le $MaxAgeDays) {
+            New-CheckResult -Control $control -Status 'Pass' -Finding $finding
+        }
+        else {
+            New-CheckResult -Control $control -Status 'Fail' -Finding $finding -Remediation $remediation
+        }
+    }
+    catch {
+        New-CheckResult -Control $control -Status 'Error' -Finding "Could not read update history: $($_.Exception.Message)"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
