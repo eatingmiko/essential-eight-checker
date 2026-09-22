@@ -236,6 +236,58 @@ function Test-OSPatching {
     }
 }
 
+function Test-OfficeMacroSettings {
+    <#
+    .SYNOPSIS
+        E8 Control 3: Checks Office macro settings enforced by policy.
+    #>
+
+    $control = 'Office macro settings'
+
+    # Only Click-to-Run (Microsoft 365 / retail) Office is detected here
+    $c2rPath = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
+    if (-not (Test-Path -Path $c2rPath)) {
+        return New-CheckResult -Control $control -Status 'N/A' `
+            -Finding 'Click-to-Run Microsoft Office not detected.'
+    }
+
+    $policyRoot = 'HKCU:\Software\Policies\Microsoft\Office\16.0'
+    $apps       = @('Word', 'Excel', 'PowerPoint')
+    $issues     = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($app in $apps) {
+        $securityKey   = "$policyRoot\$app\Security"
+        $blockInternet = Get-RegistryValue -Path $securityKey -Name 'blockcontentexecutionfrominternet'
+        $vbaWarnings   = Get-RegistryValue -Path $securityKey -Name 'vbawarnings'
+
+        if ($blockInternet -ne 1) {
+            $issues.Add("${app}: internet macro blocking not enforced")
+        }
+        if ($vbaWarnings -notin @(3, 4)) {
+            $value = if ($null -eq $vbaWarnings) { 'not set' } else { $vbaWarnings }
+            $issues.Add("${app}: macros not disabled by policy (vbawarnings = $value)")
+        }
+    }
+
+    $scanScope = Get-RegistryValue -Path "$policyRoot\Common\Security" -Name 'macroruntimescanscope'
+    if ($scanScope -eq 0) {
+        $issues.Add('Macro antivirus scanning disabled by policy')
+    }
+
+    $remediation = 'Use Group Policy or Intune to block macros from the internet, ' +
+                   'disable macros for users without a business need (vbawarnings 4), ' +
+                   'keep macro AV scanning on, and prevent users changing these settings.'
+
+    if ($issues.Count -eq 0) {
+        New-CheckResult -Control $control -Status 'Pass' `
+            -Finding 'Macro policies enforced for Word, Excel and PowerPoint.'
+    }
+    else {
+        New-CheckResult -Control $control -Status 'Fail' `
+            -Finding ($issues -join '; ') -Remediation $remediation
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
@@ -248,6 +300,8 @@ Write-Host "Read-only. Run only on systems you own or are authorised to assess.`
 # ---------------------------------------------------------------------------
 
 $Results.Add((Test-ApplicationControl))
+$Results.Add((Test-OSPatching))
+$Results.Add((Test-OfficeMacroSettings))
 
 # ---------------------------------------------------------------------------
 # Output
