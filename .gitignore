@@ -1,0 +1,10 @@
+# Generated reports - contain hostname, username and local admin account names
+reports/
+*.csv
+*.html
+*.log
+
+# Windows / editor clutter
+Thumbs.db
+desktop.ini
+.vscode/
