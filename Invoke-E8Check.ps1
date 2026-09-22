@@ -341,6 +341,42 @@ function Test-PowerShellV2 {
     }
 }
 
+function Test-LocalAdministrators {
+    <#
+    .SYNOPSIS
+        E8 Control 5: Lists local Administrators group members and checks
+        whether the current account is one of them.
+    #>
+
+    $control    = 'Restrict administrative privileges'
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+
+    try {
+        # S-1-5-32-544 = built-in Administrators group (same on every language of Windows)
+        $members = @(Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction Stop)
+    }
+    catch {
+        return New-CheckResult -Control $control -Status 'Error' `
+            -Finding "Could not read group members: $($_.Exception.Message)" `
+            -Remediation 'Verify manually with: net localgroup administrators'
+    }
+
+    $memberList = ($members | ForEach-Object { "$($_.Name) [$($_.ObjectClass)]" }) -join ', '
+    $memberSids = @($members | ForEach-Object { $_.SID.Value })
+    $finding    = "$($members.Count) member(s): $memberList"
+
+    if ($memberSids -contains $currentSid) {
+        $finding    += '. The account running this script is a local administrator.'
+        $remediation = 'Use a separate standard (non-admin) account for daily web browsing ' +
+                       'and email, and keep admin accounts for administrative tasks only. ' +
+                       'Remove any members that do not need admin rights.'
+        New-CheckResult -Control $control -Status 'Warning' -Finding $finding -Remediation $remediation
+    }
+    else {
+        New-CheckResult -Control $control -Status 'Pass' -Finding $finding
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
