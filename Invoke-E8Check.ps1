@@ -44,7 +44,7 @@ function New-CheckResult {
         [string]$Control,
 
         [Parameter(Mandatory)]
-        [ValidateSet('Pass', 'Fail', 'Warning', 'Manual', 'Error')]
+        [ValidateSet('Pass', 'Fail', 'Warning', 'Manual', 'Error', 'N/A')]
         [string]$Status,
 
         [Parameter(Mandatory)]
@@ -61,6 +61,27 @@ function New-CheckResult {
     }
 }
 
+function Get-RegistryValue {
+    <#
+    .SYNOPSIS
+        Returns a registry value, or $null if the key or value does not exist.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    try {
+        Get-ItemPropertyValue -Path $Path -Name $Name -ErrorAction Stop
+    }
+    catch {
+        $null
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Check functions
 # ---------------------------------------------------------------------------
@@ -68,17 +89,16 @@ function New-CheckResult {
 function Test-ApplicationControl {
     <#
     .SYNOPSIS
-        E8 Control 1: Checks whether an App Control for Business (WDAC)
-        or AppLocker policy is enforced for user-mode applications.
+        E8 Control 1: Checks whether an organisation-controlled application
+        control policy (App Control for Business / WDAC or AppLocker) is enforced.
     #>
 
     $control = 'Application control'
     $details = [System.Collections.Generic.List[string]]::new()
 
-    # --- App Control for Business (WDAC) ---
-    # We check the USER-MODE status. The kernel-mode status is often
-    # "Enforced" on Windows 11 because of the default driver blocklist,
-    # which does not control the applications users run.
+    # --- App Control for Business (WDAC), user-mode ---
+    # Kernel-mode status is ignored: on Windows 11 it is usually "Enforced"
+    # by the default vulnerable driver blocklist, which does not control apps.
     # Status codes: 0 = Off, 1 = Audit mode, 2 = Enforced
     $wdacUserMode = $null
     try {
@@ -95,43 +115,76 @@ function Test-ApplicationControl {
         $details.Add("WDAC status could not be read: $($_.Exception.Message)")
     }
 
-    # --- AppLocker ---
-    # A rule collection counts only if it contains rules. AppLocker also
-    # needs the Application Identity service running to enforce anything.
-    $appLockerMode = 'Not configured'
-    try {
-        $policy      = Get-AppLockerPolicy -Effective -ErrorAction Stop
-        $collections = @($policy.RuleCollections | Where-Object { $_.Count -gt 0 })
-
-        if ($collections | Where-Object { $_.EnforcementMode -eq 'Enabled' }) {
-            $appLockerMode = 'Enforced'
-        }
-        elseif ($collections | Where-Object { $_.EnforcementMode -eq 'AuditOnly' }) {
-            $appLockerMode = 'Audit only'
-        }
-
-        $appIdSvc = Get-Service -Name 'AppIDSvc' -ErrorAction SilentlyContinue
-        $svcState = if ($appIdSvc) { $appIdSvc.Status } else { 'Not found' }
-
-        if ($appLockerMode -eq 'Enforced' -and $svcState -ne 'Running') {
-            $appLockerMode = 'Rules exist but AppIDSvc not running'
-        }
-
-        $details.Add("AppLocker: $appLockerMode (AppIDSvc: $svcState)")
+    # --- Smart App Control ---
+    # Built on the WDAC engine, so it sets user-mode status to Enforced.
+    # It is reputation-based (Microsoft decides what is trusted), not an
+    # organisation-approved allow-list, so it does not meet the ML1 intent.
+    # Values: 0 = Off, 1 = On, 2 = Evaluation
+    $sacParams = @{
+        Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy'
+        Name = 'VerifiedAndReputablePolicyState'
     }
-    catch {
-        $details.Add("AppLocker status could not be read: $($_.Exception.Message)")
+    $sacState = Get-RegistryValue @sacParams
+    $sacText  = switch ($sacState) {
+        0       { 'Off' }
+        1       { 'On' }
+        2       { 'Evaluation' }
+        default { 'Not present' }
+    }
+    $details.Add("Smart App Control: $sacText")
+
+    # --- AppLocker ---
+    # The AppLocker module does not exist on Windows Home, so check for the
+    # cmdlet first instead of letting the call fail.
+    $appLockerMode = 'Not configured'
+    if (Get-Command -Name 'Get-AppLockerPolicy' -ErrorAction SilentlyContinue) {
+        try {
+            $policy      = Get-AppLockerPolicy -Effective -ErrorAction Stop
+            $collections = @($policy.RuleCollections | Where-Object { $_.Count -gt 0 })
+
+            if ($collections | Where-Object { $_.EnforcementMode -eq 'Enabled' }) {
+                $appLockerMode = 'Enforced'
+            }
+            elseif ($collections | Where-Object { $_.EnforcementMode -eq 'AuditOnly' }) {
+                $appLockerMode = 'Audit only'
+            }
+
+            $appIdSvc = Get-Service -Name 'AppIDSvc' -ErrorAction SilentlyContinue
+            $svcState = if ($appIdSvc) { $appIdSvc.Status } else { 'Not found' }
+
+            if ($appLockerMode -eq 'Enforced' -and $svcState -ne 'Running') {
+                $appLockerMode = 'Rules exist but AppIDSvc not running'
+            }
+            $details.Add("AppLocker: $appLockerMode (AppIDSvc: $svcState)")
+        }
+        catch {
+            $details.Add("AppLocker status could not be read: $($_.Exception.Message)")
+        }
+    }
+    else {
+        $details.Add('AppLocker: module not available on this edition (e.g. Windows Home)')
     }
 
     # --- Decide the result ---
     $finding     = $details -join '; '
-    $remediation = 'Deploy an App Control for Business (WDAC) or AppLocker policy in ' +
-                   'enforced mode that limits execution to an approved set, including ' +
-                   'user profile and temp folders. Test in audit mode first. Note: ' +
-                   'Windows Home cannot enforce AppLocker.'
+    $remediation = 'Deploy an organisation-managed App Control for Business (WDAC) or ' +
+                   'AppLocker policy in enforced mode that limits execution to an ' +
+                   'approved set, including user profile and temp folders. ' +
+                   'Requires Windows Pro/Enterprise with central management.'
 
-    if ($wdacUserMode -eq 2 -or $appLockerMode -eq 'Enforced') {
+    if ($appLockerMode -eq 'Enforced') {
         New-CheckResult -Control $control -Status 'Pass' -Finding $finding
+    }
+    elseif ($wdacUserMode -eq 2 -and $sacState -ne 1) {
+        # Enforced WDAC that is not coming from Smart App Control
+        New-CheckResult -Control $control -Status 'Pass' -Finding $finding
+    }
+    elseif ($wdacUserMode -eq 2 -and $sacState -eq 1) {
+        # Limitation: if an org policy AND Smart App Control are both active,
+        # this class can't tell them apart, so we report conservatively.
+        $finding += '. Enforcement comes from Smart App Control (reputation-based), ' +
+                    'not an organisation-approved allow-list.'
+        New-CheckResult -Control $control -Status 'Warning' -Finding $finding -Remediation $remediation
     }
     elseif ($wdacUserMode -eq 1 -or $appLockerMode -eq 'Audit only') {
         New-CheckResult -Control $control -Status 'Warning' -Finding $finding -Remediation $remediation
