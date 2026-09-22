@@ -377,6 +377,63 @@ function Test-LocalAdministrators {
     }
 }
 
+function Test-BrowserPatching {
+    <#
+    .SYNOPSIS
+        E8 Control 2: Reports installed browser versions and flags any whose
+        executable is older than the ML1 two-week patching window.
+    #>
+    param(
+        [int]$MaxAgeDays = 14
+    )
+
+    $control = 'Patch applications (browsers)'
+
+    # Standard install locations, checked in order (machine-wide, then per-user)
+    $browsers = @(
+        @{ Name  = 'Google Chrome'
+           Paths = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+                     "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+                     "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe") }
+        @{ Name  = 'Microsoft Edge'
+           Paths = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+                     "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") }
+        @{ Name  = 'Mozilla Firefox'
+           Paths = @("$env:ProgramFiles\Mozilla Firefox\firefox.exe",
+                     "${env:ProgramFiles(x86)}\Mozilla Firefox\firefox.exe") }
+    )
+
+    $details = [System.Collections.Generic.List[string]]::new()
+    $stale   = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($browser in $browsers) {
+        $exe = $browser.Paths | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
+        if (-not $exe) { continue }   # Not installed - skip to the next browser
+
+        $file    = Get-Item -Path $exe
+        $version = $file.VersionInfo.ProductVersion
+        $ageDays = [int]((Get-Date) - $file.LastWriteTime).TotalDays
+
+        $details.Add("$($browser.Name) $version (file $ageDays days old)")
+        if ($ageDays -gt $MaxAgeDays) { $stale.Add($browser.Name) }
+    }
+
+    if ($details.Count -eq 0) {
+        return New-CheckResult -Control $control -Status 'N/A' `
+            -Finding 'No supported browsers found in standard install locations.'
+    }
+
+    $finding = ($details -join '; ') + '. Verify versions against each vendor''s latest release.'
+
+    if ($stale.Count -gt 0) {
+        New-CheckResult -Control $control -Status 'Warning' -Finding $finding `
+            -Remediation "Update: $($stale -join ', '). ML1 requires browser patches within two weeks of release."
+    }
+    else {
+        New-CheckResult -Control $control -Status 'Pass' -Finding $finding
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
