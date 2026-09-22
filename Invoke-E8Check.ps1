@@ -434,6 +434,26 @@ function Test-BrowserPatching {
     }
 }
 
+function Get-ManualChecks {
+    <#
+    .SYNOPSIS
+        E8 Controls 7 and 8: MFA and backups cannot be verified from the local
+        machine, so these are reported for manual evidence collection.
+    #>
+
+    New-CheckResult -Control 'Multi-factor authentication' -Status 'Manual' `
+        -Finding ('MFA is enforced by identity providers and online services ' +
+                  '(e.g. Entra ID, email, VPN, cloud apps), not the local workstation.') `
+        -Remediation ('Collect evidence: identity provider MFA / Conditional Access ' +
+                      'policies and MFA enrolment for services holding sensitive data.')
+
+    New-CheckResult -Control 'Regular backups' -Status 'Manual' `
+        -Finding ('Backups are usually stored off-device, and ML1 requires retention, ' +
+                  'restore testing and access controls that a local script cannot verify.') `
+        -Remediation ('Collect evidence: backup schedule and retention settings, a recent ' +
+                      'successful restore test, and who can access the backups.')
+}
+
 # ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
@@ -442,12 +462,18 @@ Write-Host 'Essential Eight ML1 Indicator Check' -ForegroundColor Cyan
 Write-Host "Read-only. Run only on systems you own or are authorised to assess.`n" -ForegroundColor Yellow
 
 # ---------------------------------------------------------------------------
-# Checks
+# Checks (in Essential Eight order)
 # ---------------------------------------------------------------------------
 
 $Results.Add((Test-ApplicationControl))
-$Results.Add((Test-OSPatching))
+$Results.Add((Test-BrowserPatching))
 $Results.Add((Test-OfficeMacroSettings))
+$Results.Add((Test-PowerShellV2))
+$Results.Add((Test-LocalAdministrators))
+$Results.Add((Test-OSPatching))
+
+# Get-ManualChecks returns TWO results, so add each one individually
+Get-ManualChecks | ForEach-Object { $Results.Add($_) }
 
 # ---------------------------------------------------------------------------
 # Output
