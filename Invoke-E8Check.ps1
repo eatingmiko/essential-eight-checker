@@ -82,6 +82,16 @@ function Get-RegistryValue {
     }
 }
 
+function Test-IsAdministrator {
+    <#
+    .SYNOPSIS
+        Returns $true if the script is running elevated (as administrator).
+    #>
+    $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 # ---------------------------------------------------------------------------
 # Check functions
 # ---------------------------------------------------------------------------
@@ -285,6 +295,49 @@ function Test-OfficeMacroSettings {
     else {
         New-CheckResult -Control $control -Status 'Fail' `
             -Finding ($issues -join '; ') -Remediation $remediation
+    }
+}
+
+function Test-PowerShellV2 {
+    <#
+    .SYNOPSIS
+        E8 Control 4 (ML2 indicator): Checks whether Windows PowerShell 2.0 is installed.
+    #>
+
+    $control     = 'User application hardening (PowerShell 2.0, ML2)'
+    $remediation = 'Remove PowerShell 2.0 (run separately, as admin): ' +
+                   'Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root'
+
+    # Guard clause: this check needs elevation
+    if (-not (Test-IsAdministrator)) {
+        return New-CheckResult -Control $control -Status 'Manual' `
+            -Finding 'Requires administrator rights. Re-run the script elevated to check.'
+    }
+
+    try {
+        # Query all features and filter, rather than asking for one by name,
+        # because the feature may no longer exist on newer Windows builds
+        $features = @(Get-WindowsOptionalFeature -Online -ErrorAction Stop |
+            Where-Object { $_.FeatureName -like 'MicrosoftWindowsPowerShellV2*' })
+
+        if ($features.Count -eq 0) {
+            return New-CheckResult -Control $control -Status 'Pass' `
+                -Finding 'PowerShell 2.0 feature not present on this Windows build.'
+        }
+
+        $finding = ($features | ForEach-Object { "$($_.FeatureName): $($_.State)" }) -join '; '
+        $enabled = @($features | Where-Object { $_.State -eq 'Enabled' })
+
+        if ($enabled.Count -gt 0) {
+            New-CheckResult -Control $control -Status 'Fail' -Finding $finding -Remediation $remediation
+        }
+        else {
+            New-CheckResult -Control $control -Status 'Pass' -Finding $finding
+        }
+    }
+    catch {
+        New-CheckResult -Control $control -Status 'Error' `
+            -Finding "Could not query Windows features: $($_.Exception.Message)"
     }
 }
 
